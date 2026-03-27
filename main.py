@@ -9,6 +9,10 @@ app = Flask(__name__)
 
 API_SECRET = os.environ.get('API_SECRET', 'cambiar-esto')
 
+@app.route('/', methods=['GET'])
+def index():
+    return {'status': 'ok', 'service': 'pdf-filler'}
+
 @app.route('/health', methods=['GET'])
 def health():
     return {'status': 'ok'}
