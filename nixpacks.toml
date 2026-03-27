@@ -1,5 +1,6 @@
 [phases.setup]
-aptPkgs = ["qpdf", "libxml2-dev", "libxslt1-dev", "pkg-config"]
+nixPkgs = ["python311", "qpdf", "libxml2", "libxslt", "pkg-config", "gcc", "zlib"]
+aptPkgs = ["libqpdf-dev", "qpdf", "libxml2-dev", "libxslt1-dev", "pkg-config", "build-essential", "zlib1g-dev"]
 
 [phases.install]
 cmds = ["pip install -r requirements.txt"]
