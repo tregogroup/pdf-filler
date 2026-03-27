@@ -1,6 +1,5 @@
 from flask import Flask, request, send_file
 import pikepdf
-from lxml import etree
 import io
 import json
 import os
@@ -45,36 +44,39 @@ def fill_pdf():
         if datasets_idx is None:
             return {'error': 'No se encontro datasets en XFA'}, 400
 
+        # Read raw XML bytes - DO NOT parse with lxml
         datasets_stream = xfa[datasets_idx]
         xml_bytes = pikepdf.Stream(pdf, datasets_stream.read_bytes()).read_bytes()
-
-        # Remove any existing XML declaration before parsing
         xml_str = xml_bytes.decode('utf-8', errors='replace')
-        xml_str = re.sub(r'<\?xml[^?]*\?>\s*', '', xml_str, count=1)
 
-        tree = etree.fromstring(xml_str.encode('utf-8'))
-
-        ns = {'xfa': 'http://www.xfa.org/schema/xfa-data/1.0/'}
-        data_elem = tree.find('.//xfa:data', ns)
-        if data_elem is None:
-            return {'error': 'No se encontro xfa:data'}, 400
-
+        # Fill fields by replacing empty XML tags with values
         filled = 0
         for field_name, value in field_data.items():
-            for elem in data_elem.iter():
-                local = etree.QName(elem.tag).localname if '}' in elem.tag else elem.tag
-                if local == field_name:
-                    elem.text = str(value)
-                    filled += 1
-                    break
+            safe_value = str(value).replace('&', '&amp;').replace('<', '&lt;').replace('>', '&gt;').replace('"', '&quot;')
 
-        # Write back WITHOUT xml declaration to avoid duplication
-        new_xml = etree.tostring(tree, encoding='UTF-8', xml_declaration=False)
+            # Pattern 1: Self-closing empty tag <FieldName/>
+            pattern1 = re.compile(r'(<' + re.escape(field_name) + r')(\s*/\s*>)')
+            if pattern1.search(xml_str):
+                xml_str = pattern1.sub(r'\1>' + safe_value + '</' + field_name + '>', xml_str, count=1)
+                filled += 1
+                continue
 
-        # Rebuild with the original XML declaration format
-        final_xml = b'<?xml version="1.0" encoding="UTF-8"?>\n' + new_xml
+            # Pattern 2: Empty tag <FieldName></FieldName>
+            pattern2 = re.compile(r'(<' + re.escape(field_name) + r'>)\s*(</\s*' + re.escape(field_name) + r'\s*>)')
+            if pattern2.search(xml_str):
+                xml_str = pattern2.sub(r'\1' + safe_value + r'\2', xml_str, count=1)
+                filled += 1
+                continue
 
-        xfa[datasets_idx] = pdf.make_stream(final_xml)
+            # Pattern 3: Tag with existing value <FieldName>old</FieldName>
+            pattern3 = re.compile(r'(<' + re.escape(field_name) + r'>)[^<]*(</\s*' + re.escape(field_name) + r'\s*>)')
+            if pattern3.search(xml_str):
+                xml_str = pattern3.sub(r'\1' + safe_value + r'\2', xml_str, count=1)
+                filled += 1
+
+        # Write back the modified XML as raw bytes - preserves original structure
+        new_xml_bytes = xml_str.encode('utf-8')
+        xfa[datasets_idx] = pdf.make_stream(new_xml_bytes)
 
         output = io.BytesIO()
         pdf.save(output)
