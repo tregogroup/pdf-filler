@@ -4,6 +4,7 @@ from lxml import etree
 import io
 import json
 import os
+import re
 
 app = Flask(__name__)
 
@@ -27,25 +28,37 @@ def fill_pdf():
         field_data = json.loads(request.form.get('field_data', '{}'))
         if not pdf_file:
             return {'error': 'No se envio archivo PDF'}, 400
+
         pdf = pikepdf.open(io.BytesIO(pdf_file.read()))
         root = pdf.Root
+
         if '/AcroForm' not in root or '/XFA' not in root['/AcroForm']:
             return {'error': 'El PDF no tiene formulario XFA'}, 400
+
         xfa = root['/AcroForm']['/XFA']
         datasets_idx = None
         for i in range(0, len(xfa), 2):
             if str(xfa[i]) == 'datasets':
                 datasets_idx = i + 1
                 break
+
         if datasets_idx is None:
             return {'error': 'No se encontro datasets en XFA'}, 400
+
         datasets_stream = xfa[datasets_idx]
         xml_bytes = pikepdf.Stream(pdf, datasets_stream.read_bytes()).read_bytes()
-        tree = etree.fromstring(xml_bytes)
+
+        # Remove any existing XML declaration before parsing
+        xml_str = xml_bytes.decode('utf-8', errors='replace')
+        xml_str = re.sub(r'<\?xml[^?]*\?>\s*', '', xml_str, count=1)
+
+        tree = etree.fromstring(xml_str.encode('utf-8'))
+
         ns = {'xfa': 'http://www.xfa.org/schema/xfa-data/1.0/'}
         data_elem = tree.find('.//xfa:data', ns)
         if data_elem is None:
             return {'error': 'No se encontro xfa:data'}, 400
+
         filled = 0
         for field_name, value in field_data.items():
             for elem in data_elem.iter():
@@ -54,13 +67,22 @@ def fill_pdf():
                     elem.text = str(value)
                     filled += 1
                     break
-        new_xml = etree.tostring(tree, xml_declaration=True, encoding='UTF-8')
-        xfa[datasets_idx] = pdf.make_stream(new_xml)
+
+        # Write back WITHOUT xml declaration to avoid duplication
+        new_xml = etree.tostring(tree, encoding='UTF-8', xml_declaration=False)
+
+        # Rebuild with the original XML declaration format
+        final_xml = b'<?xml version="1.0" encoding="UTF-8"?>\n' + new_xml
+
+        xfa[datasets_idx] = pdf.make_stream(final_xml)
+
         output = io.BytesIO()
         pdf.save(output)
         pdf.close()
         output.seek(0)
+
         return send_file(output, mimetype='application/pdf', as_attachment=True, download_name='filled.pdf')
+
     except Exception as e:
         return {'error': str(e)}, 500
 
